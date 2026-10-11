@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pink Cat</title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #ffd6e7; touch-action: none; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #replay {
+    position: fixed; top: calc(14px + env(safe-area-inset-top, 0px)); right: 14px;
+    width: 38px; height: 38px; border-radius: 50%; border: 1px solid rgba(190,20,90,.3);
+    background: rgba(255,255,255,.4); color: #d61c5c; font-size: 18px; cursor: pointer;
+    opacity: .7; transition: opacity .6s;
+  }
+  #replay.hide { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="replay" aria-label="Replay">↻</button>
+
+<script>
+// ============ تنظیمات: اینجا رو شخصی‌سازی کن ============
+const PHRASES = [
+  "I love you", "Seni seviyorum", "Te amo", "Je t'aime", "Ich liebe dich", "Ti amo",
+  "Я тебя люблю", "愛してる", "我爱你", "사랑해", "Ik hou van jou", "Jag älskar dig",
+  "Kocham cię", "Anh yêu em", "Aku cinta kamu", "Σ' αγαπώ", "دوستت دارم", "אני אוהב אותך",
+  "Mahal kita", "Te iubesc", "Te quiero", "Eu te amo", "Szeretlek", "Minä rakastan sinua"
+];
+const CENTER_LINE = "Seni seviyorum";   // ترکی استانبولی: «دوستت دارم»
+const CENTER_NAME = "Sherry";
+const PALETTE = [[222,42,105],[255,95,155],[236,64,128],[255,125,165]];
+const OUTLINE_COUNT = 84, FILL_COUNT = 230;
+const BUILD_SECONDS = 11;                 // مدت جمع شدن کلمه‌ها
+// ========================================================
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });   // alpha:false = رندر سریع‌تر
+const btn = document.getElementById('replay');
+const FONT = '"Segoe UI", Tahoma, "Noto Sans", system-ui, sans-serif';
+const SCRIPT = '"Fredoka", "Nunito", "Segoe UI", Tahoma, sans-serif';
+const SD = Math.min(devicePixelRatio || 1, 2);            // کیفیت اسپرایت‌ها
+const rand = (a, b) => a + Math.random() * (b - a);
+
+let W, H, res = SD, items = [], dust = [], bows = [], t0 = 0, last = 0, cx, cy, scale, heartH;
+let bgC, bowSpr, centerSpr = null, centerKey = '', accT = 0, accN = 0;
+const ptr = { x: -999, y: -999 };
+
+// شکل: سر گربه‌ی ساده با دو گوش (طرح عمومی و اختصاصی)؛ واحدها نسبی‌اند، محور y رو به بالا
+const HEAD = { RX: 17, RY: 12, N: 2.5 };   // N بزرگ‌تر = سر گردتر و پرتر؛ ۲ = بیضی ساده
+function catOutline() {
+  const { RX, RY, N } = HEAD, pts = [], rad = d => d * Math.PI / 180, sg = v => (v < 0 ? -1 : 1);
+  const ell = a => { const c = Math.cos(rad(a)), s = Math.sin(rad(a));
+    return { x: RX * sg(c) * Math.pow(Math.abs(c), 2 / N), y: RY * sg(s) * Math.pow(Math.abs(s), 2 / N) }; };
+  const arc = (a0, a1) => { const n = Math.ceil(Math.abs(a1 - a0)); for (let i = 0; i <= n; i++) pts.push(ell(a0 + (a1 - a0) * i / n)); };
+  const line = (p, q) => { for (let i = 1; i <= 40; i++) pts.push({ x: p.x + (q.x - p.x) * i / 40, y: p.y + (q.y - p.y) * i / 40 }); };
+  const bez = (p0, c1, c2, p1) => { for (let i = 1; i <= 40; i++) { const t = i / 40, u = 1 - t;   // گوش گرد با منحنی
+    pts.push({ x: u*u*u*p0.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*p1.x, y: u*u*u*p0.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*p1.y }); } };
+  const EAR = { x: 11.4, y: 18.4 };            // نوک گوش: y بزرگ‌تر = گوش بلندتر و تیزتر
+  arc(90, 62); line(ell(62), EAR); line(EAR, ell(36));
+  arc(36, -216); line(ell(-216), { x: -EAR.x, y: EAR.y }); line({ x: -EAR.x, y: EAR.y }, ell(118));
+  arc(118, 90);
+  return pts;
+}
+const CAT = catOutline();
+const inPoly = (x, y, p) => {
+  let o = false;
+  for (let i = 0, j = p.length - 1; i < p.length; j = i++)
+    if ((p[i].y > y) !== (p[j].y > y) && x < (p[j].x - p[i].x) * (y - p[i].y) / (p[j].y - p[i].y) + p[i].x) o = !o;
+  return o;
+};
+const mix = u => {
+  u = ((u % 1) + 1) % 1; const n = PALETTE.length, f = u * n, i = Math.floor(f), k = f - i;
+  const a = PALETTE[i % n], b = PALETTE[(i + 1) % n];
+  return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+};
+const sprite = (w, h, draw) => {            // یک بار رسم می‌کنیم، هر فریم فقط کپی می‌کنیم
+  const c = document.createElement('canvas');
+  c.width = Math.ceil(w * SD); c.height = Math.ceil(h * SD);
+  const g = c.getContext('2d'); g.scale(SD, SD); draw(g); return c;
+};
+function sizeCanvas() { canvas.width = Math.round(W * res); canvas.height = Math.round(H * res); }
+
+function build() {
+  W = innerWidth; H = innerHeight; sizeCanvas();
+  scale = Math.min(W * 0.94 / 55, H * 0.62 / 30.6);   // جا برای سبیل‌ها هم کنار سر در نظر گرفته شده
+  cx = W / 2; cy = H / 2 + scale * 3.2;
+  const toS = p => ({ x: cx + p.x * scale, y: cy - p.y * scale });
+
+  const dense = [], cum = [0];
+  for (const p of CAT) dense.push(toS(p));
+  for (let i = 1; i < dense.length; i++) cum.push(cum[i - 1] + Math.hypot(dense[i].x - dense[i - 1].x, dense[i].y - dense[i - 1].y));
+  const total = cum[cum.length - 1];
+
+  items = []; let pi = 0;
+  const phrase = () => PHRASES[pi++ % PHRASES.length];
+  const add = (x, y, size, at, extra) => {
+    const a = rand(0, Math.PI * 2), r = scale * rand(1.5, 4);
+    items.push({ hx: x, hy: y, x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r, vx: 0, vy: 0,
+      text: (extra && extra.text) || phrase(), size, at, u: 0, ph: Math.random() * 6.28, ...extra });
+  };
+  for (let i = 0; i < OUTLINE_COUNT; i++) {
+    let k = cum.findIndex(c => c >= i / OUTLINE_COUNT * total); if (k < 0) k = dense.length - 1;
+    add(dense[k].x, dense[k].y, rand(0.55, 0.95) * scale * 0.9 + 6, i / OUTLINE_COUNT * BUILD_SECONDS * 0.55);
+  }
+  // سبیل‌ها: هر کدوم یه جمله‌ی کج‌شده‌ست که اندازه‌ش خودکار با طول سبیل جور می‌شه
+  const WH = [{ a: 10, y: 2.4, t: "Seni seviyorum", t2: "Te quiero" }, { a: -3, y: -0.6, t: "I love you", t2: "Je t'aime" }, { a: -16, y: -3.6, t: "Ich liebe dich", t2: "Ti amo" }];
+  for (const side of [1, -1]) for (const w of WH) {
+    const ar = w.a * Math.PI / 180, ex = HEAD.RX * Math.pow(1 - Math.pow(Math.abs(w.y) / HEAD.RY, HEAD.N), 1 / HEAD.N) + 1;
+    add(cx + side * (ex + 4.6 * Math.cos(ar)) * scale, cy - (w.y + 4.6 * Math.sin(ar)) * scale, 10,
+      BUILD_SECONDS * rand(0.5, 0.7), { text: side === 1 ? w.t : w.t2, fit: 9 * scale, rot: side === 1 ? -ar : ar });
+  }
+  const placed = items.map(i => ({ x: i.hx, y: i.hy })); let tries = 0, n = 0;
+  while (n < FILL_COUNT && tries < 60000) {
+    tries++;
+    const x = rand(cx - 17.5 * scale, cx + 17.5 * scale), y = rand(cy - 18.8 * scale, cy + 12.5 * scale);
+    if (!inPoly(x, y, dense)) continue;
+    const size = rand(0.5, 0.9) * scale * 0.9 + 6, minD = size * (tries > 30000 ? 1.2 : 1.9);
+    if (placed.some(q => Math.hypot(q.x - x, (q.y - y) * 1.9) < minD)) continue;
+    placed.push({ x, y }); add(x, y, size, BUILD_SECONDS * 0.4 + rand(0, BUILD_SECONDS * 0.6)); n++;
+  }
+  const xs = items.map(i => i.hx), ys = items.map(i => i.hy);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  heartH = y1 - y0;
+
+  // اسپرایت هر کلمه (رنگ + درخشش ملایم، فقط یک بار ساخته می‌شه)
+  const mctx = document.createElement('canvas').getContext('2d');
+  for (const it of items) {
+    if (it.fit) { mctx.font = `700 10px ${FONT}`; it.size = Math.min(14, 10 * it.fit / mctx.measureText(it.text).width); }
+    it.u = ((it.hx - x0) / (x1 - x0) + (it.hy - y0) / (y1 - y0)) / 2;
+    const c = mix(it.u).map(v => v | 0), font = `700 ${it.size}px ${FONT}`;
+    mctx.font = font; const pad = 8;
+    it.sw = mctx.measureText(it.text).width + pad * 2; it.sh = it.size * 1.5 + pad * 2;
+    it.spr = sprite(it.sw, it.sh, g => {
+      g.font = font; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.shadowColor = `rgba(${c[0]},${c[1]},${c[2]},.35)`; g.shadowBlur = 4;
+      g.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`; g.fillText(it.text, it.sw / 2, it.sh / 2);
+    });
+  }
+
+  // پس‌زمینه‌ی گرادیانی: یک بار، در اندازه‌ی کوچک
+  bgC = document.createElement('canvas'); bgC.width = Math.ceil(W / 4); bgC.height = Math.ceil(H / 4);
+  const bg = bgC.getContext('2d'), R = Math.max(W, H) * 0.75 / 4;
+  const g = bg.createRadialGradient(cx / 4, cy / 4, 0, cx / 4, cy / 4, R);
+  g.addColorStop(0, '#fff3f8'); g.addColorStop(0.55, '#ffd9e8'); g.addColorStop(1, '#ffb7d2');
+  bg.fillStyle = g; bg.fillRect(0, 0, bgC.width, bgC.height);
+  bg.save(); bg.scale(0.25, 0.25);          // سیلوئت سفیدِ نرم پشت کلمه‌ها تا شکل سر واضح‌تر دیده بشه
+  bg.beginPath(); dense.forEach((q, i) => (i ? bg.lineTo(q.x, q.y) : bg.moveTo(q.x, q.y))); bg.closePath();
+  bg.shadowColor = 'rgba(255,255,255,.9)'; bg.shadowBlur = 10; bg.fillStyle = 'rgba(255,255,255,.4)'; bg.fill();
+  bg.shadowBlur = 0;
+  for (const sd of [-1, 1]) {               // گونه‌های صورتی
+    const bx = cx + sd * scale * 10, by = cy + scale * 3.2, br = scale * 3.4;
+    const bgr = bg.createRadialGradient(bx, by, 0, bx, by, br);
+    bgr.addColorStop(0, 'rgba(255,120,165,.32)'); bgr.addColorStop(1, 'rgba(255,120,165,0)');
+    bg.fillStyle = bgr; bg.fillRect(bx - br, by - br, br * 2, br * 2);
+  }
+  bg.restore();
+
+  // اسپرایت پاپیون (طرح ساده‌ی خودمون)
+  bowSpr = sprite(120, 90, b => {
+    const s = 40; b.translate(60, 45); b.fillStyle = '#ff3b78'; b.strokeStyle = '#b0124a'; b.lineWidth = s * 0.06;
+    for (const d of [-1, 1]) {
+      b.beginPath(); b.moveTo(0, 0);
+      b.bezierCurveTo(d * s * 0.5, -s * 0.7, d * s * 1.2, -s * 0.6, d * s * 1.15, 0);
+      b.bezierCurveTo(d * s * 1.2, s * 0.6, d * s * 0.5, s * 0.7, 0, 0); b.fill(); b.stroke();
+    }
+    b.beginPath(); b.ellipse(0, 0, s * 0.2, s * 0.25, 0, 0, 6.283); b.fill(); b.stroke();
+  });
+
+  // پاپیون‌های والپیپر
+  bows = [];
+  const cell = Math.max(78, W / 5.2), rows = Math.ceil(H / cell) + 2, cols = Math.ceil(W / cell) + 2;
+  for (let r = -1; r < rows; r++) for (let c = -1; c < cols; c++)
+    bows.push({ x: (c + (r % 2 ? 0.5 : 0)) * cell + cell / 2, y: r * cell * 0.9 + cell / 2, s: cell * 0.2,
+      rot: (r + c) % 2 ? 0.25 : -0.25, ph: (r + c) * 0.6 });
+
+  dust = Array.from({ length: 45 }, () => ({ x: rand(0, W), y: rand(0, H), r: rand(0.6, 2), s: rand(8, 26) }));
+  centerSpr = null;
+}
+
+function drawBow(x, y, s, a, rot) {
+  const f = s / 40; ctx.globalAlpha = a;
+  ctx.translate(x, y); ctx.rotate(rot);
+  ctx.drawImage(bowSpr, -60 * f, -45 * f, 120 * f, 90 * f);
+  ctx.rotate(-rot); ctx.translate(-x, -y);
+}
+
+function makeCenter() {                      // متن وسط: یک بار ساخته می‌شه
+  const cw = scale * 24, ch = scale * 10;
+  return sprite(cw, ch, g => {
+    g.translate(cw / 2, ch / 2); g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+    g.shadowColor = 'rgba(190,20,90,.7)'; g.shadowBlur = 14; g.fillStyle = '#fff'; g.strokeStyle = '#d61c5c';
+    g.font = `600 ${scale * 2.7}px ${SCRIPT}`; g.letterSpacing = `${scale * 0.1}px`; g.lineWidth = scale * 0.45;
+    g.strokeText(CENTER_LINE, 0, -scale * 1.7); g.fillText(CENTER_LINE, 0, -scale * 1.7);
+    g.font = `700 ${scale * 4.2}px ${SCRIPT}`; g.letterSpacing = `${scale * 0.16}px`; g.lineWidth = scale * 0.6;
+    g.strokeText(CENTER_NAME, 0, scale * 1.7); g.fillText(CENTER_NAME, 0, scale * 1.7);
+  });
+}
+
+function frame(now) {
+  const t = (now - t0) / 1000, dt = Math.min(0.05, (now - last) / 1000 || 0.016); last = now;
+
+  // کاهش خودکار رزولوشن اگه دستگاه ضعیفه
+  accT += dt; if (++accN === 40) {
+    if (accT / accN > 0.024 && res > 1) { res = Math.max(1, res - 0.5); sizeCanvas(); }
+    accT = 0; accN = 0;
+  }
+
+  ctx.setTransform(res, 0, 0, res, 0, 0); ctx.globalAlpha = 1;
+  ctx.drawImage(bgC, 0, 0, W, H);
+
+  for (const b of bows) {                    // پاپیون‌های پس‌زمینه، شناور و منظم
+    const yy = b.y + Math.sin(t * 0.8 + b.ph) * 6, xx = b.x + Math.sin(t * 0.5 + b.ph) * 2.4;
+    drawBow(xx, yy, b.s, 0.18, b.rot + Math.sin(t * 0.64 + b.ph) * 0.12);
+  }
+
+  ctx.globalAlpha = 0.75; ctx.fillStyle = '#fff'; ctx.beginPath();   // جرقه‌ها: یک مسیر، یک fill
+  for (const d of dust) {
+    d.y -= d.s * dt; if (d.y < -5) { d.y = H + 5; d.x = rand(0, W); }
+    ctx.moveTo(d.x + d.r, d.y); ctx.arc(d.x, d.y, d.r, 0, 6.283);
+  }
+  ctx.fill();
+
+  const done = BUILD_SECONDS + 1.5, bt = ((t - done) % 1.6 + 1.6) % 1.6;
+  const beat = t > done ? 1 + 0.03 * (Math.exp(-bt * 14) + 0.7 * Math.exp(-Math.pow(bt - 0.28, 2) * 300)) : 1;
+  const waveR = t > done ? ((t - done) % 3.2) / 3.2 * heartH * 0.9 : -1;
+  const ca = Math.min(1, Math.max(0, (t - BUILD_SECONDS) / 1.2));
+  ctx.setTransform(res * beat, 0, 0, res * beat, res * cx * (1 - beat), res * cy * (1 - beat));
+
+  const ty = cy - scale * 0.3, R = scale * 5;
+  for (const it of items) {
+    const age = t - it.at; if (age < 0) continue;
+    it.vx += (it.hx - it.x) * 9 * dt; it.vy += (it.hy - it.y) * 9 * dt;
+    const dx = it.x - ptr.x, dy = it.y - ptr.y, d = Math.hypot(dx, dy);
+    if (d < R && d > 1) { const f = (1 - d / R) * 2200 * dt; it.vx += dx / d * f; it.vy += dy / d * f; }
+    const damp = Math.exp(-6 * dt); it.vx *= damp; it.vy *= damp;
+    it.x += it.vx * dt; it.y += it.vy * dt;
+
+    const settle = Math.max(0, 1 - Math.hypot(it.hx - it.x, it.hy - it.y) / (scale * 6));
+    let glow = Math.max(0, 1 - age / 1.2) * 0.6;
+    if (waveR >= 0) {
+      const dist = Math.hypot((it.hx - cx) / 1.05, (it.hy - ty) * 1.15) / scale;
+      glow = Math.max(glow, Math.max(0, 1 - Math.abs(dist - waveR / scale) / 3.2) * 0.8);
+    }
+    const behind = Math.abs(it.hx - cx) < scale * 9 && Math.abs(it.hy - ty) < scale * 3.9;
+    const a = Math.min(1, age / 1.6) * (0.5 + 0.5 * settle) * (0.88 + 0.12 * Math.sin(t * 1.3 + it.ph)) * (behind ? 1 - 0.72 * ca : 1);
+    const k = 1 + glow * 0.18;
+    ctx.globalAlpha = a;
+    if (it.rot) { ctx.translate(it.x, it.y); ctx.rotate(it.rot); ctx.drawImage(it.spr, -it.sw * k / 2, -it.sh * k / 2, it.sw * k, it.sh * k); ctx.rotate(-it.rot); ctx.translate(-it.x, -it.y); }
+    else ctx.drawImage(it.spr, it.x - it.sw * k / 2, it.y - it.sh * k / 2, it.sw * k, it.sh * k);
+  }
+
+  if (ca > 0) {
+    const ok = document.fonts ? document.fonts.check('700 20px Fredoka') : true, key = ok + '|' + W + 'x' + H;
+    if (!centerSpr || centerKey !== key) { centerSpr = makeCenter(); centerKey = key; }
+    const k = 0.85 + ca * 0.15, cw = scale * 24 * k, ch = scale * 10 * k;
+    ctx.globalAlpha = ca; ctx.drawImage(centerSpr, cx - cw / 2, ty - ch / 2, cw, ch);
+    drawBow(cx - scale * 10, cy - scale * 13.4, scale * 3.8, ca, -0.4);   // پاپیون روی گوش چپ
+  }
+  requestAnimationFrame(frame);
+}
+
+const start = () => { t0 = performance.now(); build(); };
+addEventListener('resize', build);
+canvas.addEventListener('pointermove', e => { ptr.x = e.clientX; ptr.y = e.clientY; });
+canvas.addEventListener('pointerdown', e => { ptr.x = e.clientX; ptr.y = e.clientY; });
+canvas.addEventListener('pointerup', () => { ptr.x = ptr.y = -999; });
+canvas.addEventListener('pointerleave', () => { ptr.x = ptr.y = -999; });
+btn.addEventListener('click', start);
+setTimeout(() => btn.classList.add('hide'), 4000);
+if (document.fonts) { document.fonts.load('600 40px "Fredoka"'); document.fonts.load('700 40px "Fredoka"'); }
+start(); requestAnimationFrame(frame);
+</script>
+</body>
+</html>
